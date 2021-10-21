@@ -157,6 +157,10 @@ class MacOSXWatchService extends AbstractWatchService {
         }
     }
 
+    private static void traceLine(final String text) {
+        logger.finest("NATIVE trace: " + text);
+    }
+
     private class CFRunLoopThread extends Thread {
         // Native reference to the CFRunLoop object of the watch service run loop.
         private long runLoopRef;

@@ -25,11 +25,13 @@
 #include "jni_util.h"
 #include "nio_util.h"
 
+#include <stdarg.h>
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreServices/CoreServices.h>
 
 // Controls exception stack trace output and debug trace.
-// Set by raising the logging level of sun.nio.fs.MacOSXWatchService to or above WARNING.
+// Set by raising the logging level of sun.nio.fs.MacOSXWatchService to or above FINEST.
 static jboolean  tracingEnabled;
 
 static jmethodID callbackMID;         // MacOSXWatchService.callback()
@@ -38,17 +40,20 @@ static __thread jobject watchService; // The instance of MacOSXWatchService that
 
 extern CFStringRef toCFString(JNIEnv *env, jstring javaString);
 
-JNIEXPORT void JNICALL
-Java_sun_nio_fs_MacOSXWatchService_initIDs(JNIEnv* env, __unused jclass clazz)
-{
-    jfieldID tracingEnabledFieldID = (*env)->GetStaticFieldID(env, clazz, "tracingEnabled", "Z");
-    CHECK_NULL(tracingEnabledFieldID);
-    tracingEnabled = (*env)->GetStaticBooleanField(env, clazz, tracingEnabledFieldID);
-    if ((*env)->ExceptionCheck(env)) {
-        (*env)->ExceptionDescribe(env);
-    }
+static void
+traceLine(JNIEnv* env, const char* fmt, ...) {
+    if (tracingEnabled) {
+        va_list vargs;
+        va_start(vargs, fmt);
+        char* buf = (char*)malloc(1024);
+        vsnprintf(buf, 1024, fmt, vargs);
+        const jstring text = JNU_NewStringPlatform(env, buf);
+        free(buf);
+        va_end(vargs);
 
-    callbackMID = (*env)->GetMethodID(env, clazz, "callback", "(J[Ljava/lang/String;J)V");
+        jboolean ignoreException;
+        JNU_CallStaticMethodByName(env, &ignoreException, "sun/nio/fs/MacOSXWatchService", "traceLine", "(Ljava/lang/String;)V", text);
+    }
 }
 
 static jboolean
@@ -127,6 +132,19 @@ callback(__unused ConstFSEventStreamRef streamRef,
     }
 }
 
+JNIEXPORT void JNICALL
+Java_sun_nio_fs_MacOSXWatchService_initIDs(JNIEnv* env, __unused jclass clazz)
+{
+    jfieldID tracingEnabledFieldID = (*env)->GetStaticFieldID(env, clazz, "tracingEnabled", "Z");
+    CHECK_NULL(tracingEnabledFieldID);
+    tracingEnabled = (*env)->GetStaticBooleanField(env, clazz, tracingEnabledFieldID);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+    }
+
+    callbackMID = (*env)->GetMethodID(env, clazz, "callback", "(J[Ljava/lang/String;J)V");
+}
+
 /**
  * Creates a new FSEventStream and returns FSEventStreamRef for it.
  */
@@ -149,7 +167,7 @@ Java_sun_nio_fs_MacOSXWatchService_eventStreamCreate(JNIEnv* env, __unused jclas
             flags
     );
 
-    if (tracingEnabled) fprintf(stderr, "MacOSXWatchService: created event stream 0x%p\n", stream);
+    traceLine(env, "created event stream 0x%p", stream);
 
     return (jlong)stream;
 }
@@ -169,9 +187,7 @@ Java_sun_nio_fs_MacOSXWatchService_eventStreamSchedule(__unused JNIEnv* env,  __
     FSEventStreamScheduleWithRunLoop(stream, runLoop, kCFRunLoopDefaultMode);
     FSEventStreamStart(stream);
 
-    if (tracingEnabled) {
-        fprintf(stderr, "MacOSXWatchService: Scheduled stream 0x%p on thread 0x%p\n", stream, CFRunLoopGetCurrent());
-    }
+    traceLine(env, "scheduled stream 0x%p on thread 0x%p", stream, CFRunLoopGetCurrent());
 }
 
 /**
@@ -194,7 +210,7 @@ JNIEXPORT jlong JNICALL
 Java_sun_nio_fs_MacOSXWatchService_CFRunLoopGetCurrent(__unused JNIEnv* env, __unused jclass clazz)
 {
     const CFRunLoopRef currentRunLoop = CFRunLoopGetCurrent();
-    if (tracingEnabled) fprintf(stderr, "MacOSXWatchService: Get current run loop: 0x%p\n", currentRunLoop);
+    traceLine(env, "get current run loop: 0x%p", currentRunLoop);
     return (jlong)currentRunLoop;
 }
 
@@ -205,14 +221,14 @@ Java_sun_nio_fs_MacOSXWatchService_CFRunLoopGetCurrent(__unused JNIEnv* env, __u
 JNIEXPORT void JNICALL
 Java_sun_nio_fs_MacOSXWatchService_CFRunLoopRun(__unused JNIEnv* env, __unused jclass clazz, jlong watchServiceObject)
 {
-    if (tracingEnabled) fprintf(stderr, "MacOSXWatchService: Running run loop on 0x%p\n", CFRunLoopGetCurrent());
+    traceLine(env, "running run loop on 0x%p", CFRunLoopGetCurrent());
 
+    // Thread-local pointer to the WatchService instance will be used by the callback
+    // on this thread.
     watchService = (*env)->NewGlobalRef(env, (jobject)watchServiceObject);
-
     CFRunLoopRun();
-
-    if (tracingEnabled) fprintf(stderr, "MacOSXWatchService: Run loop done on 0x%p\n", CFRunLoopGetCurrent());
-
     (*env)->DeleteGlobalRef(env, (jobject)watchService);
     watchService = NULL;
+
+    traceLine(env, "run loop done on 0x%p", CFRunLoopGetCurrent());
 }
